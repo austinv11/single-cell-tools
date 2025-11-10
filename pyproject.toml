@@ -1,0 +1,33 @@
+[project]
+name = "single-cell-tools"
+version = "0.1.0"
+description = "A collection of tools I've found useful for single-cell analysis."
+readme = "README.md"
+authors = [
+    { name = "Your Name", email = "aav4003@med.cornell.edu" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.3.0",
+    "hdf5plugin>=6.0.0",
+    "scanpy>=1.11.5",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project.urls]
+Homepage = "https://github.com/austinv11/single-cell-tools"
+
+[project.scripts]
+compress_h5ad = "single_cell_tools.scripts.compress_h5ad:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+zip-safe = false

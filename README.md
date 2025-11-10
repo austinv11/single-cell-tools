@@ -12,10 +12,10 @@ Install from my Github repo using uv (or equivalent):
 uv install git+https://github.com/austinv11/single-cell-tools.git
 ```
 
-Or install as a package using uvx (or equivalent):
+Or skip installing using uvx (or equivalent):
 
 ```bash
-uvx install git+https://github.com/austinv11/single-cell-tools.git
+uvx --from git+https://github.com/austinv11/single-cell-tools.git ...
 ```
 
 ## Usage:

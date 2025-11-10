@@ -22,7 +22,7 @@ build-backend = "setuptools.build_meta"
 Homepage = "https://github.com/austinv11/single-cell-tools"
 
 [project.scripts]
-compress_h5ad = "single_cell_tools.scripts.compress_h5ad:main"
+compress_h5ad = "single_cell_tools.compress_h5ad:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

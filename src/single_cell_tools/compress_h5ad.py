@@ -57,7 +57,7 @@ def main(input_file: str, output_file: str = None, compression: Literal["gzip", 
     )
 
     is_same = output_file is None or (input_file == output_file)
-    with tempfile.NamedTemporaryFile(delete=is_same) as tmp_file:
+    with tempfile.NamedTemporaryFile() as tmp_file:
         temp_output_file = tmp_file.name if is_same else output_file
         if compression != "zstd":
             adata.write_h5ad(temp_output_file, compression=compression)  # Use built-in compression
@@ -71,9 +71,9 @@ def main(input_file: str, output_file: str = None, compression: Literal["gzip", 
         # If overwriting, move temp file to original location
         if is_same:
             os.remove(input_file)
-            shutil.move(temp_output_file, input_file)
+            shutil.copy(temp_output_file, input_file)
         else:
-            shutil.move(temp_output_file, input_file)
+            shutil.copy(temp_output_file, input_file)
 
     click.echo(
         f"Compression completed, h5ad file saved to: {output_file if output_file else input_file}"

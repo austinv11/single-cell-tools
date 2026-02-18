@@ -1,47 +1,94 @@
+import glob
+import json
+import os
 import sys
+import urllib.error
+import urllib.request
 
 import click
 
 
+def _find_kernel_connection_file(notebook_path: str) -> str | None:
+    """
+    Query each running Jupyter server's sessions API to find the kernel
+    UUID associated with the given notebook path, then return the path to
+    its connection file.
+    """
+    try:
+        from jupyter_client import find_connection_file
+        from jupyter_client.connect import jupyter_runtime_dir
+    except ImportError:
+        return None
+
+    runtime_dir = jupyter_runtime_dir()
+    abs_notebook = os.path.abspath(notebook_path)
+
+    # Jupyter writes one *server-<pid>.json per running server instance.
+    server_files = sorted(
+        glob.glob(os.path.join(runtime_dir, "*server-*.json")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+
+    for server_file in server_files:
+        try:
+            with open(server_file) as f:
+                server_info = json.load(f)
+
+            url = server_info.get("url", "").rstrip("/")
+            token = server_info.get("token", "")
+            if not url:
+                continue
+
+            req = urllib.request.Request(
+                f"{url}/api/sessions",
+                headers={"Authorization": f"token {token}"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                sessions = json.loads(resp.read())
+
+            root_dir = server_info.get("root_dir") or server_info.get("notebook_dir", "")
+
+            for session in sessions:
+                session_abs = os.path.abspath(
+                    os.path.join(root_dir, session.get("path", ""))
+                )
+                if session_abs == abs_notebook:
+                    kernel_id = session["kernel"]["id"]
+                    click.echo(f"Kernel ID: {kernel_id}")
+                    return find_connection_file(kernel_id)
+
+        except Exception:
+            continue
+
+    return None
+
+
 @click.command()
-@click.argument('notebook_path', type=click.Path(exists=True))
+@click.argument("notebook_path", type=click.Path(exists=True))
 def main(notebook_path: str):
     """
-    Find and identify the running jupyter kernel associated with a notebook,
-    then attach to the current process and follow the kernel's output.
-
-    This allows the user to see the output of the notebook in real time.
-
-    :param notebook_path: Path to the Jupyter notebook to attach to.
+    Find and attach to the running Jupyter kernel associated with a notebook,
+    then stream its output to the terminal in real time.
     """
     try:
         import jupyter_client
-        import nbformat
-    except:
+    except ImportError:
         click.echo("Make sure this is run in the same environment that Jupyter is installed to.")
+        return
 
-    # Find the kernel associated with the notebook
     click.echo(f"Finding kernel for notebook: {notebook_path}")
-    nb = nbformat.read(notebook_path, as_version=4)
-    kernel_id = nb['metadata']['kernelspec']['name']
-    click.echo(f"Kernel ID: {kernel_id}")
 
-    def check_kernel_is_busy(kernel_manager):
-        for kernel in kernel_manager.list_kernels():
-            if kernel['id'] == kernel_id:
-                return kernel['execution_state'] == 'busy'
-        return False
-
-    # Verify the kernel is running
-    kernel_manager = jupyter_client.KernelManager()
-    kernel_manager.load_connection_file(kernel_id)
-    if not check_kernel_is_busy(kernel_manager):
-        click.echo("Kernel is not currently running. The notebook must have a currently running cell.")
+    connection_file = _find_kernel_connection_file(notebook_path)
+    if connection_file is None:
+        click.echo(
+            "Could not find a running kernel for this notebook.\n"
+            "Make sure the notebook is open and running in Jupyter."
+        )
         return
 
     click.echo("Attaching to kernel, interrupt the process to detach...")
 
-    connection_file = jupyter_client.find_connection_file(kernel_id)
     client = jupyter_client.BlockingKernelClient(connection_file=connection_file)
     client.load_connection_file()
     client.start_channels()
@@ -49,16 +96,16 @@ def main(notebook_path: str):
     try:
         while True:
             msg = client.get_iopub_msg()
-            if msg['msg_type'] == 'stream':
-                print(msg['content']['text'], end='', flush=True)
-            elif msg['msg_type'] == 'execute_result':
+            if msg["msg_type"] == "stream":
+                print(msg["content"]["text"], end="", flush=True)
+            elif msg["msg_type"] == "execute_result":
                 print("==== Execute Result ====", flush=True)
-                print(msg['content']['data']['text/plain'], flush=True)
-            elif msg['msg_type'] == 'error':
-                print('\n'.join(msg['content']['traceback']), flush=True, file=sys.stderr)
-            elif msg['msg_type'] == 'status' and msg['content']['execution_state'] == 'idle':
+                print(msg["content"]["data"]["text/plain"], flush=True)
+            elif msg["msg_type"] == "error":
+                print("\n".join(msg["content"]["traceback"]), flush=True, file=sys.stderr)
+            elif msg["msg_type"] == "status" and msg["content"]["execution_state"] == "idle":
                 click.echo("Kernel is idle. Waiting for next cell execution...")
-            elif msg['msg_type'] == 'close':
+            elif msg["msg_type"] == "close":
                 click.echo("Kernel has been closed.")
                 break
 
@@ -68,5 +115,5 @@ def main(notebook_path: str):
         client.stop_channels()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

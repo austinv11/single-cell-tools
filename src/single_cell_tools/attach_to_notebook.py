@@ -87,30 +87,46 @@ def main(notebook_path: str):
         )
         return
 
-    click.echo("Attaching to kernel, interrupt the process to detach...")
+    click.echo("Attaching to kernel (Ctrl+C to interrupt kernel, Ctrl+C twice to detach)...")
 
     client = jupyter_client.BlockingKernelClient(connection_file=connection_file)
     client.load_connection_file()
     client.start_channels()
 
+    last_interrupt = 0.0
+
     try:
         while True:
-            msg = client.get_iopub_msg()
-            if msg["msg_type"] == "stream":
-                print(msg["content"]["text"], end="", flush=True)
-            elif msg["msg_type"] == "execute_result":
-                print("==== Execute Result ====", flush=True)
-                print(msg["content"]["data"]["text/plain"], flush=True)
-            elif msg["msg_type"] == "error":
-                print("\n".join(msg["content"]["traceback"]), flush=True, file=sys.stderr)
-            elif msg["msg_type"] == "status" and msg["content"]["execution_state"] == "idle":
-                click.echo("Kernel is idle. Waiting for next cell execution...")
-            elif msg["msg_type"] == "close":
-                click.echo("Kernel has been closed.")
-                break
+            try:
+                while True:
+                    msg = client.get_iopub_msg()
+                    if msg["msg_type"] == "stream":
+                        print(msg["content"]["text"], end="", flush=True)
+                    elif msg["msg_type"] == "execute_result":
+                        print("==== Execute Result ====", flush=True)
+                        print(msg["content"]["data"]["text/plain"], flush=True)
+                    elif msg["msg_type"] == "error":
+                        print("\n".join(msg["content"]["traceback"]), flush=True, file=sys.stderr)
+                    elif msg["msg_type"] == "status" and msg["content"]["execution_state"] == "idle":
+                        click.echo("Kernel is idle. Waiting for next cell execution...")
+                    elif msg["msg_type"] == "close":
+                        click.echo("Kernel has been closed.")
+                        return
 
-    except KeyboardInterrupt:
-        click.echo("Detaching from kernel...")
+            except KeyboardInterrupt:
+                import time
+                now = time.monotonic()
+                if now - last_interrupt < 2.0:
+                    click.echo("\nDetaching from kernel...")
+                    return
+                last_interrupt = now
+                click.echo("\nInterrupting kernel... (Ctrl+C again within 2 s to detach)")
+                try:
+                    msg = client.session.msg("interrupt_request", {})
+                    client.control_channel.send(msg)
+                except Exception as e:
+                    click.echo(f"Warning: could not send interrupt to kernel: {e}")
+
     finally:
         client.stop_channels()
 

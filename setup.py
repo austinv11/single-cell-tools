@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from setuptools import setup
-from setuptools.command.build_scripts import build_scripts as _build_scripts
+from setuptools.command.build import build as _build
 
 # Entry-point wrapper scripts to compile.
 SCRIPTS = [
@@ -15,11 +15,12 @@ SCRIPTS = [
 ]
 
 
-class NuitkaBuildScripts(_build_scripts):
-    """build_scripts override: compiles wrapper scripts to standalone binaries via Nuitka.
+class NuitkaBuild(_build):
+    """build override: compiles wrapper scripts to standalone binaries via Nuitka.
 
+    Hooks into the standard `build` command (which always exists in setuptools)
+    rather than `build_scripts`, which is not present in all setuptools versions.
     Falls back to plain Python scripts if Nuitka is not installed or compilation fails.
-    Nuitka must be available in the build environment (listed under [build-system].requires).
     """
 
     def run(self):
@@ -36,11 +37,16 @@ class NuitkaBuildScripts(_build_scripts):
             )
             return
 
-        # Make the project's own source available to Nuitka when it follows imports.
-        build_py = self.get_finalized_command("build_py")
-        build_lib = getattr(build_py, "build_lib", None)
+        # Locate the directory where build_scripts placed the processed scripts.
+        build_scripts_cmd = self.get_finalized_command("build_scripts")
+        build_dir = Path(build_scripts_cmd.build_dir)
 
-        build_dir = Path(self.build_dir)
+        if not build_dir.exists():
+            return
+
+        # Extend PYTHONPATH so Nuitka can import the freshly-built package.
+        build_py_cmd = self.get_finalized_command("build_py")
+        build_lib = getattr(build_py_cmd, "build_lib", None)
 
         for script in SCRIPTS:
             script_name = Path(script).name
@@ -52,16 +58,10 @@ class NuitkaBuildScripts(_build_scripts):
             print(f"Compiling {script_name} with Nuitka (--onefile) ...")
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                # Nuitka appends .exe on Windows automatically when -o has no extension,
-                # so we name the output file explicitly to match the script name.
-                if sys.platform == "win32":
-                    output_name = script_name + ".exe"
-                else:
-                    output_name = script_name
-
+                # Name the output explicitly; Nuitka adds .exe on Windows automatically.
+                output_name = script_name + (".exe" if sys.platform == "win32" else "")
                 output_path = Path(tmpdir) / output_name
 
-                # Extend PYTHONPATH so Nuitka can import the freshly-built package.
                 env = os.environ.copy()
                 if build_lib:
                     env["PYTHONPATH"] = (
@@ -104,5 +104,5 @@ class NuitkaBuildScripts(_build_scripts):
 
 setup(
     scripts=SCRIPTS,
-    cmdclass={"build_scripts": NuitkaBuildScripts},
+    cmdclass={"build": NuitkaBuild},
 )

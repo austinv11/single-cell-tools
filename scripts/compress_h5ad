@@ -1,0 +1,8 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import sys
+
+from single_cell_tools.compress_h5ad import main
+
+if __name__ == '__main__':
+    sys.exit(main())

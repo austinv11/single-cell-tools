@@ -22,7 +22,7 @@ def main(notebook_path: str):
 
     # Find the kernel associated with the notebook
     click.echo(f"Finding kernel for notebook: {notebook_path}")
-    nb = nbformat.read(notebook_path)
+    nb = nbformat.read(notebook_path, as_version=4)
     kernel_id = nb['metadata']['kernelspec']['name']
     click.echo(f"Kernel ID: {kernel_id}")
 

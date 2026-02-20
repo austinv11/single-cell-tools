@@ -7,6 +7,8 @@ import urllib.request
 import click
 from rich.console import Console
 from rich.live import Live
+from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
 
 
@@ -68,10 +70,11 @@ def _find_kernel_connection_file(notebook_path: str) -> tuple[str, str] | None:
     return None
 
 
-def _notebook_cell_stats(notebook_path: str) -> tuple[int, int]:
+def _notebook_cell_stats(notebook_path: str) -> tuple[int, int, str]:
     """
-    Return (total_code_cells, max_execution_count) from the notebook file.
+    Return (total_code_cells, max_execution_count, kernel_language) from the notebook file.
     max_execution_count reflects how many cell executions have occurred so far.
+    kernel_language is the Pygments lexer name (e.g. "python" or "r").
     """
     try:
         with open(notebook_path) as f:
@@ -82,12 +85,28 @@ def _notebook_cell_stats(notebook_path: str) -> tuple[int, int]:
             (c.get("execution_count") or 0 for c in code_cells),
             default=0,
         )
-        return total, max_ec
+        lang = nb.get("metadata", {}).get("kernelspec", {}).get("language", "python").lower()
+        return total, max_ec, lang
     except Exception:
-        return 0, 0
+        return 0, 0, "python"
 
 
-def _print_last_cell_output(console: Console, notebook_path: str) -> None:
+def _print_code_block(console: Console, code: str | list, execution_count: int | str, language: str) -> None:
+    """Render a syntax-highlighted code block with execution count as title."""
+    if isinstance(code, list):
+        code = "".join(code)
+    if not code.strip():
+        return
+    console.print(Panel(
+        Syntax(code, language, theme="monokai", word_wrap=True),
+        title=f"[dim]In [{execution_count}][/dim]",
+        title_align="left",
+        border_style="dim",
+        padding=(0, 1),
+    ))
+
+
+def _print_last_cell_output(console: Console, notebook_path: str, language: str) -> None:
     """
     Read the notebook file and print the outputs of the last code cell
     that has non-empty outputs, so the user sees recent output immediately
@@ -109,6 +128,7 @@ def _print_last_cell_output(console: Console, notebook_path: str) -> None:
 
     exec_count = last_cell_with_output.get("execution_count") or "?"
     console.print(f"[dim]--- Last cell output \\[execution count: {exec_count}] ---[/dim]")
+    _print_code_block(console, last_cell_with_output.get("source", ""), exec_count, language)
     for output in last_cell_with_output["outputs"]:
         output_type = output.get("output_type", "")
         if output_type == "stream":
@@ -182,8 +202,8 @@ def main(notebook_path: str):
         return
 
     connection_file, kernel_state = result
-    total_cells, cells_executed = _notebook_cell_stats(notebook_path)
-    _print_last_cell_output(console, notebook_path)
+    total_cells, cells_executed, language = _notebook_cell_stats(notebook_path)
+    _print_last_cell_output(console, notebook_path, language)
     console.print(
         "Attaching to kernel "
         "([bold]Ctrl+C[/bold] interrupt & detach, [bold]Ctrl+Z[/bold] detach only)..."
@@ -219,6 +239,7 @@ def main(notebook_path: str):
                     # Kernel just started executing a cell; bump the counter.
                     ec = content.get("execution_count") or 0
                     cells_executed = max(cells_executed, ec)
+                    _print_code_block(console, content.get("code", ""), ec, language)
 
                 elif msg_type == "stream":
                     console.print(content["text"], end="")

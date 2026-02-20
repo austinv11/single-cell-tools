@@ -66,14 +66,23 @@ def _find_kernel_connection_file(notebook_path: str) -> str | None:
     return None
 
 
-def _count_code_cells(notebook_path: str) -> int:
-    """Return the number of code cells in the notebook file."""
+def _notebook_cell_stats(notebook_path: str) -> tuple[int, int]:
+    """
+    Return (total_code_cells, max_execution_count) from the notebook file.
+    max_execution_count reflects how many cell executions have occurred so far.
+    """
     try:
         with open(notebook_path) as f:
             nb = json.load(f)
-        return sum(1 for c in nb.get("cells", []) if c.get("cell_type") == "code")
+        code_cells = [c for c in nb.get("cells", []) if c.get("cell_type") == "code"]
+        total = len(code_cells)
+        max_ec = max(
+            (c.get("execution_count") or 0 for c in code_cells),
+            default=0,
+        )
+        return total, max_ec
     except Exception:
-        return 0
+        return 0, 0
 
 
 def _print_last_cell_output(console: Console, notebook_path: str) -> None:
@@ -170,7 +179,7 @@ def main(notebook_path: str):
         )
         return
 
-    total_cells = _count_code_cells(notebook_path)
+    total_cells, cells_executed = _notebook_cell_stats(notebook_path)
     _print_last_cell_output(console, notebook_path)
     console.print(
         "Attaching to kernel "
@@ -189,7 +198,6 @@ def main(notebook_path: str):
     client.start_channels()
 
     kernel_state = "idle"
-    cells_executed = 0
 
     try:
         with Live(

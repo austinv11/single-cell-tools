@@ -1,11 +1,13 @@
 import glob
 import json
 import os
-import sys
 import urllib.error
 import urllib.request
 
 import click
+from rich.console import Console
+from rich.live import Live
+from rich.text import Text
 
 
 def _find_kernel_connection_file(notebook_path: str) -> str | None:
@@ -64,7 +66,17 @@ def _find_kernel_connection_file(notebook_path: str) -> str | None:
     return None
 
 
-def _print_last_cell_output(notebook_path: str) -> None:
+def _count_code_cells(notebook_path: str) -> int:
+    """Return the number of code cells in the notebook file."""
+    try:
+        with open(notebook_path) as f:
+            nb = json.load(f)
+        return sum(1 for c in nb.get("cells", []) if c.get("cell_type") == "code")
+    except Exception:
+        return 0
+
+
+def _print_last_cell_output(console: Console, notebook_path: str) -> None:
     """
     Read the notebook file and print the outputs of the last code cell
     that has non-empty outputs, so the user sees recent output immediately
@@ -85,24 +97,53 @@ def _print_last_cell_output(notebook_path: str) -> None:
         return
 
     exec_count = last_cell_with_output.get("execution_count") or "?"
-    click.echo(f"--- Last cell output [execution count: {exec_count}] ---")
+    console.print(f"[dim]--- Last cell output \\[execution count: {exec_count}] ---[/dim]")
     for output in last_cell_with_output["outputs"]:
         output_type = output.get("output_type", "")
         if output_type == "stream":
             text = output.get("text", "")
             if isinstance(text, list):
                 text = "".join(text)
-            print(text, end="", flush=True)
+            console.print(text, end="")
         elif output_type in ("execute_result", "display_data"):
             data = output.get("data", {})
             text = data.get("text/plain", "")
             if isinstance(text, list):
                 text = "".join(text)
             if text:
-                print(text, flush=True)
+                console.print(text)
         elif output_type == "error":
-            traceback = output.get("traceback", [])
-            print("\n".join(traceback), file=sys.stderr, flush=True)
+            traceback_lines = output.get("traceback", [])
+            console.print("\n".join(traceback_lines), style="red")
+    console.print("[dim]--- End of last cell output ---[/dim]")
+
+
+# Status colors per kernel execution_state value.
+_STATE_STYLE = {
+    "idle":     ("●", "bold green"),
+    "busy":     ("●", "bold yellow"),
+    "starting": ("●", "bold blue"),
+}
+
+
+def _make_status_bar(kernel_state: str, cells_executed: int, total_cells: int) -> Text:
+    symbol, style = _STATE_STYLE.get(kernel_state, ("●", "bold red"))
+
+    bar = Text()
+    bar.append(" Kernel: ", style="bold")
+    bar.append(f"{symbol} {kernel_state}", style=style)
+    bar.append("  │  ", style="dim")
+    bar.append("Cells: ", style="bold")
+
+    # Progress bar
+    width = 20
+    filled = int(width * cells_executed / total_cells) if total_cells else 0
+    filled = min(filled, width)
+    bar.append("█" * filled, style="bold cyan")
+    bar.append("░" * (width - filled), style="dim")
+    bar.append(f" {cells_executed}/{total_cells}", style="bold")
+
+    return bar
 
 
 @click.command()
@@ -118,18 +159,23 @@ def main(notebook_path: str):
         click.echo("Make sure this is run in the same environment that Jupyter is installed to.")
         return
 
-    click.echo(f"Finding kernel for notebook: {notebook_path}")
+    console = Console(highlight=False)
+    console.print(f"Finding kernel for notebook: [bold]{notebook_path}[/bold]")
 
     connection_file = _find_kernel_connection_file(notebook_path)
     if connection_file is None:
-        click.echo(
-            "Could not find a running kernel for this notebook.\n"
-            "Make sure the notebook is open and running in Jupyter."
+        console.print(
+            "[red]Could not find a running kernel for this notebook.\n"
+            "Make sure the notebook is open and running in Jupyter.[/red]"
         )
         return
 
-    _print_last_cell_output(notebook_path)
-    click.echo("Attaching to kernel (Ctrl+C to interrupt kernel and detach, Ctrl+Z to detach without interrupting)...")
+    total_cells = _count_code_cells(notebook_path)
+    _print_last_cell_output(console, notebook_path)
+    console.print(
+        "Attaching to kernel "
+        "([bold]Ctrl+C[/bold] interrupt & detach, [bold]Ctrl+Z[/bold] detach only)..."
+    )
 
     import signal
 
@@ -142,32 +188,64 @@ def main(notebook_path: str):
     client.load_connection_file()
     client.start_channels()
 
+    kernel_state = "idle"
+    cells_executed = 0
+
     try:
-        while True:
-            msg = client.get_iopub_msg()
-            if msg["msg_type"] == "stream":
-                print(msg["content"]["text"], end="", flush=True)
-            elif msg["msg_type"] == "execute_result":
-                print("==== Execute Result ====", flush=True)
-                print(msg["content"]["data"]["text/plain"], flush=True)
-            elif msg["msg_type"] == "error":
-                print("\n".join(msg["content"]["traceback"]), flush=True, file=sys.stderr)
-            elif msg["msg_type"] == "status" and msg["content"]["execution_state"] == "idle":
-                click.echo("Kernel is idle. Waiting for next cell execution...")
-            elif msg["msg_type"] == "close":
-                click.echo("Kernel has been closed.")
-                return
+        with Live(
+            _make_status_bar(kernel_state, cells_executed, total_cells),
+            console=console,
+            refresh_per_second=8,
+            transient=False,
+        ) as live:
+            while True:
+                msg = client.get_iopub_msg()
+                msg_type = msg["msg_type"]
+                content = msg.get("content", {})
+
+                if msg_type == "status":
+                    kernel_state = content.get("execution_state", kernel_state)
+
+                elif msg_type == "execute_input":
+                    # Kernel just started executing a cell; bump the counter.
+                    ec = content.get("execution_count") or 0
+                    cells_executed = max(cells_executed, ec)
+
+                elif msg_type == "stream":
+                    console.print(content["text"], end="")
+
+                elif msg_type == "execute_result":
+                    console.print(content["data"].get("text/plain", ""))
+
+                elif msg_type == "display_data":
+                    text = content.get("data", {}).get("text/plain", "")
+                    if text:
+                        console.print(text)
+
+                elif msg_type == "error":
+                    console.print("\n".join(content.get("traceback", [])), style="red")
+
+                elif msg_type == "clear_output":
+                    console.clear()
+
+                elif msg_type == "comm_close" or (
+                    msg_type == "status" and content.get("execution_state") == "dead"
+                ):
+                    console.print("[red]Kernel has been closed.[/red]")
+                    return
+
+                live.update(_make_status_bar(kernel_state, cells_executed, total_cells))
 
     except KeyboardInterrupt:
-        click.echo("\nInterrupting kernel and detaching...")
+        console.print("\n[yellow]Interrupting kernel and detaching...[/yellow]")
         try:
             msg = client.session.msg("interrupt_request", {})
             client.control_channel.send(msg)
         except Exception as e:
-            click.echo(f"Warning: could not send interrupt to kernel: {e}")
+            console.print(f"[red]Warning: could not send interrupt to kernel: {e}[/red]")
 
     except _DetachOnly:
-        click.echo("\nDetaching from kernel...")
+        console.print("\n[yellow]Detaching from kernel...[/yellow]")
 
     finally:
         signal.signal(signal.SIGTSTP, old_sigtstp)

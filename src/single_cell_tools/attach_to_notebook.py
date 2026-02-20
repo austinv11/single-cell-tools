@@ -91,6 +91,29 @@ def _notebook_cell_stats(notebook_path: str) -> tuple[int, int, str]:
         return 0, 0, "python"
 
 
+def _print_rich_output(console: Console, data: dict) -> None:
+    """
+    Render a Jupyter output data bundle, preferring HTML (via markdownify) over plain text.
+    """
+    html = data.get("text/html", "")
+    if html:
+        try:
+            from markdownify import markdownify
+            from rich.markdown import Markdown
+            md = markdownify(html, heading_style="ATX").strip()
+            if md:
+                console.print(Markdown(md))
+                return
+        except ImportError:
+            pass
+
+    text = data.get("text/plain", "")
+    if isinstance(text, list):
+        text = "".join(text)
+    if text:
+        console.print(text)
+
+
 def _print_code_block(console: Console, code: str | list, execution_count: int | str, language: str) -> None:
     """Render a syntax-highlighted code block with execution count as title."""
     if isinstance(code, list):
@@ -137,12 +160,7 @@ def _print_last_cell_output(console: Console, notebook_path: str, language: str)
                 text = "".join(text)
             console.print(text, end="")
         elif output_type in ("execute_result", "display_data"):
-            data = output.get("data", {})
-            text = data.get("text/plain", "")
-            if isinstance(text, list):
-                text = "".join(text)
-            if text:
-                console.print(text)
+            _print_rich_output(console, output.get("data", {}))
         elif output_type == "error":
             traceback_lines = output.get("traceback", [])
             console.print("\n".join(traceback_lines), style="red")
@@ -160,7 +178,7 @@ _STATE_STYLE = {
 def _make_status_bar(kernel_state: str, cells_executed: int, total_cells: int) -> Text:
     symbol, style = _STATE_STYLE.get(kernel_state, ("●", "bold red"))
 
-    bar = Text()
+    bar = Text("\n")
     bar.append(" Kernel: ", style="bold")
     bar.append(f"{symbol} {kernel_state}", style=style)
     bar.append("  │  ", style="dim")
@@ -245,12 +263,10 @@ def main(notebook_path: str):
                     console.print(content["text"], end="")
 
                 elif msg_type == "execute_result":
-                    console.print(content["data"].get("text/plain", ""))
+                    _print_rich_output(console, content.get("data", {}))
 
                 elif msg_type == "display_data":
-                    text = content.get("data", {}).get("text/plain", "")
-                    if text:
-                        console.print(text)
+                    _print_rich_output(console, content.get("data", {}))
 
                 elif msg_type == "error":
                     console.print("\n".join(content.get("traceback", [])), style="red")

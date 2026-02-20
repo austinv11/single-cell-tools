@@ -64,6 +64,47 @@ def _find_kernel_connection_file(notebook_path: str) -> str | None:
     return None
 
 
+def _print_last_cell_output(notebook_path: str) -> None:
+    """
+    Read the notebook file and print the outputs of the last code cell
+    that has non-empty outputs, so the user sees recent output immediately
+    upon attaching.
+    """
+    try:
+        with open(notebook_path) as f:
+            nb = json.load(f)
+    except Exception:
+        return
+
+    last_cell_with_output = None
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") == "code" and cell.get("outputs"):
+            last_cell_with_output = cell
+
+    if last_cell_with_output is None:
+        return
+
+    exec_count = last_cell_with_output.get("execution_count") or "?"
+    click.echo(f"--- Last cell output [execution count: {exec_count}] ---")
+    for output in last_cell_with_output["outputs"]:
+        output_type = output.get("output_type", "")
+        if output_type == "stream":
+            text = output.get("text", "")
+            if isinstance(text, list):
+                text = "".join(text)
+            print(text, end="", flush=True)
+        elif output_type in ("execute_result", "display_data"):
+            data = output.get("data", {})
+            text = data.get("text/plain", "")
+            if isinstance(text, list):
+                text = "".join(text)
+            if text:
+                print(text, flush=True)
+        elif output_type == "error":
+            traceback = output.get("traceback", [])
+            print("\n".join(traceback), file=sys.stderr, flush=True)
+
+
 @click.command()
 @click.argument("notebook_path", type=click.Path(exists=True))
 def main(notebook_path: str):
@@ -87,6 +128,7 @@ def main(notebook_path: str):
         )
         return
 
+    _print_last_cell_output(notebook_path)
     click.echo("Attaching to kernel (Ctrl+C to interrupt kernel and detach, Ctrl+Z to detach without interrupting)...")
 
     import signal

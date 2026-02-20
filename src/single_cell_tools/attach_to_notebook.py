@@ -5,7 +5,7 @@ import urllib.error
 import urllib.request
 
 import click
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -175,6 +175,38 @@ _STATE_STYLE = {
 }
 
 
+def _process_stream(buf: str, text: str) -> tuple[str, list[str]]:
+    """
+    Handle carriage-return overwrite semantics (used by tqdm and similar).
+
+    Returns (new_buf, completed_lines) where:
+    - new_buf is the current in-progress line (not yet terminated by \\n)
+    - completed_lines have a trailing \\n and are ready to print
+    """
+    completed: list[str] = []
+    combined = buf + text
+    current = ""
+    i = 0
+    while i < len(combined):
+        ch = combined[i]
+        if ch == "\r":
+            if i + 1 < len(combined) and combined[i + 1] == "\n":
+                completed.append(current + "\n")
+                current = ""
+                i += 2
+            else:
+                current = ""  # carriage return: overwrite the current line
+                i += 1
+        elif ch == "\n":
+            completed.append(current + "\n")
+            current = ""
+            i += 1
+        else:
+            current += ch
+            i += 1
+    return current, completed
+
+
 def _make_status_bar(kernel_state: str, cells_executed: int, total_cells: int) -> Text:
     symbol, style = _STATE_STYLE.get(kernel_state, ("●", "bold red"))
 
@@ -238,9 +270,17 @@ def main(notebook_path: str):
     client.load_connection_file()
     client.start_channels()
 
+    stream_buf = ""  # in-progress line (not yet \n-terminated; e.g. a tqdm bar)
+
+    def _live_renderable() -> Group:
+        status = _make_status_bar(kernel_state, cells_executed, total_cells)
+        if stream_buf:
+            return Group(Text(stream_buf), status)
+        return Group(status)
+
     try:
         with Live(
-            _make_status_bar(kernel_state, cells_executed, total_cells),
+            _live_renderable(),
             console=console,
             refresh_per_second=8,
             transient=False,
@@ -260,7 +300,9 @@ def main(notebook_path: str):
                     _print_code_block(console, content.get("code", ""), ec, language)
 
                 elif msg_type == "stream":
-                    console.print(content["text"], end="")
+                    stream_buf, completed = _process_stream(stream_buf, content["text"])
+                    for line in completed:
+                        console.print(line, end="")
 
                 elif msg_type == "execute_result":
                     _print_rich_output(console, content.get("data", {}))
@@ -280,7 +322,7 @@ def main(notebook_path: str):
                     console.print("[red]Kernel has been closed.[/red]")
                     return
 
-                live.update(_make_status_bar(kernel_state, cells_executed, total_cells))
+                live.update(_live_renderable())
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupting kernel and detaching...[/yellow]")

@@ -10,11 +10,11 @@ from rich.live import Live
 from rich.text import Text
 
 
-def _find_kernel_connection_file(notebook_path: str) -> str | None:
+def _find_kernel_connection_file(notebook_path: str) -> tuple[str, str] | None:
     """
     Query each running Jupyter server's sessions API to find the kernel
-    UUID associated with the given notebook path, then return the path to
-    its connection file.
+    UUID associated with the given notebook path, then return a tuple of
+    (connection_file_path, execution_state).
     """
     try:
         from jupyter_client import find_connection_file
@@ -56,9 +56,11 @@ def _find_kernel_connection_file(notebook_path: str) -> str | None:
                     os.path.join(root_dir, session.get("path", ""))
                 )
                 if session_abs == abs_notebook:
-                    kernel_id = session["kernel"]["id"]
+                    kernel = session["kernel"]
+                    kernel_id = kernel["id"]
+                    execution_state = kernel.get("execution_state", "idle")
                     click.echo(f"Kernel ID: {kernel_id}")
-                    return find_connection_file(kernel_id)
+                    return find_connection_file(kernel_id), execution_state
 
         except Exception:
             continue
@@ -171,14 +173,15 @@ def main(notebook_path: str):
     console = Console(highlight=False)
     console.print(f"Finding kernel for notebook: [bold]{notebook_path}[/bold]")
 
-    connection_file = _find_kernel_connection_file(notebook_path)
-    if connection_file is None:
+    result = _find_kernel_connection_file(notebook_path)
+    if result is None:
         console.print(
             "[red]Could not find a running kernel for this notebook.\n"
             "Make sure the notebook is open and running in Jupyter.[/red]"
         )
         return
 
+    connection_file, kernel_state = result
     total_cells, cells_executed = _notebook_cell_stats(notebook_path)
     _print_last_cell_output(console, notebook_path)
     console.print(
@@ -196,8 +199,6 @@ def main(notebook_path: str):
     client = jupyter_client.BlockingKernelClient(connection_file=connection_file)
     client.load_connection_file()
     client.start_channels()
-
-    kernel_state = "idle"
 
     try:
         with Live(

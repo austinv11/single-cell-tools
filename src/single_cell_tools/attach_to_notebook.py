@@ -111,7 +111,7 @@ def _print_rich_output(console: Console, data: dict) -> None:
     if isinstance(text, list):
         text = "".join(text)
     if text:
-        console.print(text)
+        console.print(text, markup=False)
 
 
 def _print_code_block(console: Console, code: str | list, execution_count: int | str, language: str) -> None:
@@ -129,11 +129,55 @@ def _print_code_block(console: Console, code: str | list, execution_count: int |
     ))
 
 
-def _print_last_cell_output(console: Console, notebook_path: str, language: str) -> None:
+def _find_likely_executing_cell(notebook_path: str) -> tuple[str, list, int | str] | None:
+    """
+    Scan the notebook to find the cell most likely currently executing.
+
+    Strategy A: code cell with execution_count set but empty outputs (started, no output yet).
+    Strategy B: first code cell after the last cell with non-empty outputs.
+    Returns (source, outputs, execution_count) or None.
+    """
+    try:
+        with open(notebook_path) as f:
+            nb = json.load(f)
+    except Exception:
+        return None
+
+    cells = [c for c in nb.get("cells", []) if c.get("cell_type") == "code"]
+
+    # Strategy A: has execution_count (kernel assigned it) but outputs are empty
+    in_progress = [c for c in cells if c.get("execution_count") and not c.get("outputs")]
+    if in_progress:
+        candidate = max(in_progress, key=lambda c: c["execution_count"])
+        source = candidate.get("source", "")
+        if isinstance(source, list):
+            source = "".join(source)
+        return source, candidate.get("outputs", []), candidate["execution_count"]
+
+    # Strategy B: first cell after the last cell with non-empty outputs
+    last_complete_idx = -1
+    for i, c in enumerate(cells):
+        if c.get("outputs"):
+            last_complete_idx = i
+    if last_complete_idx + 1 < len(cells):
+        candidate = cells[last_complete_idx + 1]
+        source = candidate.get("source", "")
+        if isinstance(source, list):
+            source = "".join(source)
+        ec = candidate.get("execution_count") or "?"
+        return source, candidate.get("outputs", []), ec
+
+    return None
+
+
+def _print_last_cell_output(
+    console: Console, notebook_path: str, language: str, is_busy: bool = False
+) -> None:
     """
     Read the notebook file and print the outputs of the last code cell
     that has non-empty outputs, so the user sees recent output immediately
-    upon attaching.
+    upon attaching.  When is_busy is True, also show the likely currently
+    executing cell.
     """
     try:
         with open(notebook_path) as f:
@@ -146,25 +190,43 @@ def _print_last_cell_output(console: Console, notebook_path: str, language: str)
         if cell.get("cell_type") == "code" and cell.get("outputs"):
             last_cell_with_output = cell
 
-    if last_cell_with_output is None:
-        return
+    if last_cell_with_output is not None:
+        exec_count = last_cell_with_output.get("execution_count") or "?"
+        console.print(f"[dim]--- Last cell output \\[execution count: {exec_count}] ---[/dim]")
+        _print_code_block(console, last_cell_with_output.get("source", ""), exec_count, language)
+        for output in last_cell_with_output["outputs"]:
+            output_type = output.get("output_type", "")
+            if output_type == "stream":
+                text = output.get("text", "")
+                if isinstance(text, list):
+                    text = "".join(text)
+                console.print(text, end="", markup=False)
+            elif output_type in ("execute_result", "display_data"):
+                _print_rich_output(console, output.get("data", {}))
+            elif output_type == "error":
+                traceback_lines = output.get("traceback", [])
+                console.print("\n".join(traceback_lines), style="red", markup=False)
+        console.print("[dim]--- End of last cell output ---[/dim]")
 
-    exec_count = last_cell_with_output.get("execution_count") or "?"
-    console.print(f"[dim]--- Last cell output \\[execution count: {exec_count}] ---[/dim]")
-    _print_code_block(console, last_cell_with_output.get("source", ""), exec_count, language)
-    for output in last_cell_with_output["outputs"]:
-        output_type = output.get("output_type", "")
-        if output_type == "stream":
-            text = output.get("text", "")
-            if isinstance(text, list):
-                text = "".join(text)
-            console.print(text, end="")
-        elif output_type in ("execute_result", "display_data"):
-            _print_rich_output(console, output.get("data", {}))
-        elif output_type == "error":
-            traceback_lines = output.get("traceback", [])
-            console.print("\n".join(traceback_lines), style="red")
-    console.print("[dim]--- End of last cell output ---[/dim]")
+    if is_busy:
+        executing = _find_likely_executing_cell(notebook_path)
+        if executing is not None:
+            source, outputs, ec = executing
+            console.print("[dim]--- Currently executing cell ---[/dim]")
+            _print_code_block(console, source, "...", language)
+            for output in outputs:
+                output_type = output.get("output_type", "")
+                if output_type == "stream":
+                    text = output.get("text", "")
+                    if isinstance(text, list):
+                        text = "".join(text)
+                    console.print(text, end="", markup=False)
+                elif output_type in ("execute_result", "display_data"):
+                    _print_rich_output(console, output.get("data", {}))
+                elif output_type == "error":
+                    traceback_lines = output.get("traceback", [])
+                    console.print("\n".join(traceback_lines), style="red", markup=False)
+            console.print("[dim]--- (live outputs will stream below) ---[/dim]")
 
 
 # Status colors per kernel execution_state value.
@@ -253,7 +315,7 @@ def main(notebook_path: str):
 
     connection_file, kernel_state = result
     total_cells, cells_executed, language = _notebook_cell_stats(notebook_path)
-    _print_last_cell_output(console, notebook_path, language)
+    _print_last_cell_output(console, notebook_path, language, is_busy=(kernel_state == "busy"))
     console.print(
         "Attaching to kernel "
         "([bold]Ctrl+C[/bold] interrupt & detach, [bold]Ctrl+Z[/bold] detach only)..."
@@ -292,6 +354,9 @@ def main(notebook_path: str):
 
                 if msg_type == "status":
                     kernel_state = content.get("execution_state", kernel_state)
+                    if kernel_state == "dead":
+                        console.print("[red]Kernel has been closed.[/red]")
+                        return
 
                 elif msg_type == "execute_input":
                     # Kernel just started executing a cell; bump the counter.
@@ -302,7 +367,7 @@ def main(notebook_path: str):
                 elif msg_type == "stream":
                     stream_buf, completed = _process_stream(stream_buf, content["text"])
                     for line in completed:
-                        console.print(line, end="")
+                        console.print(line, end="", markup=False)
 
                 elif msg_type == "execute_result":
                     _print_rich_output(console, content.get("data", {}))
@@ -311,16 +376,10 @@ def main(notebook_path: str):
                     _print_rich_output(console, content.get("data", {}))
 
                 elif msg_type == "error":
-                    console.print("\n".join(content.get("traceback", [])), style="red")
+                    console.print("\n".join(content.get("traceback", [])), style="red", markup=False)
 
                 elif msg_type == "clear_output":
                     console.clear()
-
-                elif msg_type == "comm_close" or (
-                    msg_type == "status" and content.get("execution_state") == "dead"
-                ):
-                    console.print("[red]Kernel has been closed.[/red]")
-                    return
 
                 live.update(_live_renderable())
 

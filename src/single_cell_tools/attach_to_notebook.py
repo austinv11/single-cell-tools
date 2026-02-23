@@ -133,8 +133,12 @@ def _find_likely_executing_cell(notebook_path: str) -> tuple[str, list, int | st
     """
     Scan the notebook to find the cell most likely currently executing.
 
-    Strategy A: code cell with execution_count set but empty outputs (started, no output yet).
-    Strategy B: first code cell after the last cell with non-empty outputs.
+    Strategy A: code cell with execution_count set but empty outputs — the kernel
+                assigned it an ec but hasn't produced output yet (or notebook was
+                saved mid-execution before output arrived).
+    Strategy B: the cell that comes positionally after the cell with the highest
+                execution_count.  Uses ec position rather than outputs so that
+                no-output cells (e.g. `x = 5`) don't cause an off-by-one.
     Returns (source, outputs, execution_count) or None.
     """
     try:
@@ -144,23 +148,36 @@ def _find_likely_executing_cell(notebook_path: str) -> tuple[str, list, int | st
         return None
 
     cells = [c for c in nb.get("cells", []) if c.get("cell_type") == "code"]
+    if not cells:
+        return None
 
-    # Strategy A: has execution_count (kernel assigned it) but outputs are empty
+    # Strategy A: has execution_count (kernel assigned it) but outputs are empty.
+    # Take the one with the highest ec — that's the most recently started cell.
     in_progress = [c for c in cells if c.get("execution_count") and not c.get("outputs")]
     if in_progress:
         candidate = max(in_progress, key=lambda c: c["execution_count"])
         source = candidate.get("source", "")
         if isinstance(source, list):
             source = "".join(source)
-        return source, candidate.get("outputs", []), candidate["execution_count"]
+        return source, [], candidate["execution_count"]
 
-    # Strategy B: first cell after the last cell with non-empty outputs
-    last_complete_idx = -1
-    for i, c in enumerate(cells):
-        if c.get("outputs"):
-            last_complete_idx = i
-    if last_complete_idx + 1 < len(cells):
-        candidate = cells[last_complete_idx + 1]
+    # Strategy B: cell positionally after the one with the highest execution_count.
+    # This is correct even when intermediate cells produce no output.
+    max_ec = max((c.get("execution_count") or 0 for c in cells), default=0)
+    if max_ec == 0:
+        # Nothing recorded yet; show the first cell.
+        candidate = cells[0]
+        source = candidate.get("source", "")
+        if isinstance(source, list):
+            source = "".join(source)
+        return source, [], "?"
+
+    last_max_idx = max(
+        (i for i, c in enumerate(cells) if (c.get("execution_count") or 0) == max_ec),
+        default=-1,
+    )
+    if last_max_idx + 1 < len(cells):
+        candidate = cells[last_max_idx + 1]
         source = candidate.get("source", "")
         if isinstance(source, list):
             source = "".join(source)
@@ -314,9 +331,22 @@ def main(notebook_path: str):
         return
 
     connection_file, kernel_state = result
-    total_cells, cells_executed, language = _notebook_cell_stats(notebook_path)
-    if kernel_state == "busy" and cells_executed > 0:
-        cells_executed += 1
+    total_cells, max_ec_on_disk, language = _notebook_cell_stats(notebook_path)
+    if kernel_state == "busy":
+        # Check if the currently executing cell is already reflected on disk
+        # (i.e., kernel assigned it an ec but no outputs saved yet — Strategy A).
+        # If so, max_ec_on_disk already equals the current cell's ec.
+        # If not, the current cell's ec hasn't been saved, so it's max_ec + 1.
+        try:
+            with open(notebook_path) as _fh:
+                _nb = json.load(_fh)
+            _code_cells = [c for c in _nb.get("cells", []) if c.get("cell_type") == "code"]
+            _in_progress = [c for c in _code_cells if c.get("execution_count") and not c.get("outputs")]
+            cells_executed = max_ec_on_disk if _in_progress else max(max_ec_on_disk + 1, 1)
+        except Exception:
+            cells_executed = max(max_ec_on_disk + 1, 1)
+    else:
+        cells_executed = max_ec_on_disk
     _print_last_cell_output(console, notebook_path, language, is_busy=(kernel_state == "busy"))
     console.print(
         "Attaching to kernel "

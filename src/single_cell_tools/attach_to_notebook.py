@@ -315,6 +315,8 @@ def main(notebook_path: str):
 
     connection_file, kernel_state = result
     total_cells, cells_executed, language = _notebook_cell_stats(notebook_path)
+    if kernel_state == "busy" and cells_executed > 0:
+        cells_executed += 1
     _print_last_cell_output(console, notebook_path, language, is_busy=(kernel_state == "busy"))
     console.print(
         "Attaching to kernel "

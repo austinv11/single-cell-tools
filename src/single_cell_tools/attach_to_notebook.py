@@ -133,12 +133,14 @@ def _find_likely_executing_cell(notebook_path: str) -> tuple[str, list, int | st
     """
     Scan the notebook to find the cell most likely currently executing.
 
-    Strategy A: code cell with execution_count set but empty outputs — the kernel
-                assigned it an ec but hasn't produced output yet (or notebook was
-                saved mid-execution before output arrived).
-    Strategy B: the cell that comes positionally after the cell with the highest
-                execution_count.  Uses ec position rather than outputs so that
-                no-output cells (e.g. `x = 5`) don't cause an off-by-one.
+    Key insight: Jupyter writes streaming outputs to disk BEFORE setting
+    execution_count (which is only written on cell completion).  So:
+      - Currently executing: has outputs, execution_count is null
+      - Completed with no output: execution_count set, outputs empty
+
+    Strategy A: cell with outputs but no execution_count → currently executing.
+    Strategy B: cell positionally after the one with the highest execution_count
+                (for when the executing cell has produced no output yet).
     Returns (source, outputs, execution_count) or None.
     """
     try:
@@ -151,21 +153,21 @@ def _find_likely_executing_cell(notebook_path: str) -> tuple[str, list, int | st
     if not cells:
         return None
 
-    # Strategy A: has execution_count (kernel assigned it) but outputs are empty.
-    # Take the one with the highest ec — that's the most recently started cell.
-    in_progress = [c for c in cells if c.get("execution_count") and not c.get("outputs")]
+    # Strategy A: has outputs but no execution_count — Jupyter streams output
+    # before the execution_count is finalized on disk.
+    in_progress = [c for c in cells if c.get("outputs") and not c.get("execution_count")]
     if in_progress:
-        candidate = max(in_progress, key=lambda c: c["execution_count"])
+        candidate = max(in_progress, key=lambda c: len(c.get("outputs", [])))
         source = candidate.get("source", "")
         if isinstance(source, list):
             source = "".join(source)
-        return source, [], candidate["execution_count"]
+        return source, candidate.get("outputs", []), "..."
 
     # Strategy B: cell positionally after the one with the highest execution_count.
-    # This is correct even when intermediate cells produce no output.
+    # Avoids off-by-one from no-output cells (e.g. `x = 5`).
     max_ec = max((c.get("execution_count") or 0 for c in cells), default=0)
     if max_ec == 0:
-        # Nothing recorded yet; show the first cell.
+        # Nothing completed yet; first cell is probably executing.
         candidate = cells[0]
         source = candidate.get("source", "")
         if isinstance(source, list):
@@ -181,8 +183,7 @@ def _find_likely_executing_cell(notebook_path: str) -> tuple[str, list, int | st
         source = candidate.get("source", "")
         if isinstance(source, list):
             source = "".join(source)
-        ec = candidate.get("execution_count") or "?"
-        return source, candidate.get("outputs", []), ec
+        return source, candidate.get("outputs", []), "?"
 
     return None
 
@@ -204,7 +205,9 @@ def _print_last_cell_output(
 
     last_cell_with_output = None
     for cell in nb.get("cells", []):
-        if cell.get("cell_type") == "code" and cell.get("outputs"):
+        # Only consider completed cells: execution_count is set only on completion.
+        # Cells with outputs but no execution_count are currently executing.
+        if cell.get("cell_type") == "code" and cell.get("outputs") and cell.get("execution_count"):
             last_cell_with_output = cell
 
     if last_cell_with_output is not None:
@@ -331,22 +334,11 @@ def main(notebook_path: str):
         return
 
     connection_file, kernel_state = result
-    total_cells, max_ec_on_disk, language = _notebook_cell_stats(notebook_path)
+    total_cells, cells_executed, language = _notebook_cell_stats(notebook_path)
     if kernel_state == "busy":
-        # Check if the currently executing cell is already reflected on disk
-        # (i.e., kernel assigned it an ec but no outputs saved yet — Strategy A).
-        # If so, max_ec_on_disk already equals the current cell's ec.
-        # If not, the current cell's ec hasn't been saved, so it's max_ec + 1.
-        try:
-            with open(notebook_path) as _fh:
-                _nb = json.load(_fh)
-            _code_cells = [c for c in _nb.get("cells", []) if c.get("cell_type") == "code"]
-            _in_progress = [c for c in _code_cells if c.get("execution_count") and not c.get("outputs")]
-            cells_executed = max_ec_on_disk if _in_progress else max(max_ec_on_disk + 1, 1)
-        except Exception:
-            cells_executed = max(max_ec_on_disk + 1, 1)
-    else:
-        cells_executed = max_ec_on_disk
+        # execution_count is only written to disk on cell completion, so max_ec
+        # equals completed cells. The currently executing cell is always +1.
+        cells_executed += 1
     _print_last_cell_output(console, notebook_path, language, is_busy=(kernel_state == "busy"))
     console.print(
         "Attaching to kernel "

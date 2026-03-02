@@ -72,8 +72,6 @@ def main(input_file: str, output_file: str = None, compression: Literal["gzip", 
         if is_same:
             os.remove(input_file)
             shutil.copy(temp_output_file, input_file)
-        else:
-            shutil.copy(temp_output_file, input_file)
 
     click.echo(
         f"Compression completed, h5ad file saved to: {output_file if output_file else input_file}"

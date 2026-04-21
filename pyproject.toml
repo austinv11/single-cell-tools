@@ -10,10 +10,14 @@ license = { text = "MIT" }
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.3.0",
+    "numpy>=1.24",
     "hdf5plugin>=6.0.0",
     "markdownify>=1.2.2",
+    "opencv-python-headless>=4.13.0.92",
     "rich>=13.0.0",
     "scanpy>=1.11.5",
+    "slideio>=2.8.0",
+    "tifffile>=2026.4.11",
 ]
 
 [project.optional-dependencies]

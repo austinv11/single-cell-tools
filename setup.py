@@ -12,6 +12,7 @@ from setuptools.command.build import build as _build
 SCRIPTS = [
     "scripts/compress_h5ad",
     "scripts/attach_to_notebook",
+    "scripts/convert_ome_tiff",
 ]
 
 

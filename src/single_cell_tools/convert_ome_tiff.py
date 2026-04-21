@@ -2,6 +2,7 @@ from pathlib import Path
 
 import click
 import cv2
+from rich.progress import Progress
 import numpy as np
 import slideio
 import tifffile
@@ -75,8 +76,9 @@ def _write_pyramid(
         resolutionunit="CENTIMETER",
     )
 
-    with tifffile.TiffWriter(outfile, bigtiff=True) as tif:
-        click.echo("Writing pyramid level 0")
+    with tifffile.TiffWriter(outfile, bigtiff=True) as tif, Progress() as progress:
+        task = progress.add_task("Writing pyramid levels", total=subresolutions + 1)
+
         tif.write(
             image,
             subifds=subresolutions,
@@ -84,19 +86,20 @@ def _write_pyramid(
             metadata=metadata,
             **options,
         )
+        progress.advance(task)
 
         scale = 1.0
         current = image
         for i in range(subresolutions):
             scale /= 2
             current = _half_res(current, photometric)
-            click.echo(f"Writing pyramid level {i + 1}")
             tif.write(
                 current,
                 subfiletype=1,
                 resolution=(1e4 / (scale * px_size_x), 1e4 / (scale * px_size_y)),
                 **options,
             )
+            progress.advance(task)
 
 
 def convert_generic(infile: Path, outfile: Path, subresolutions: int = 6) -> None:

@@ -71,9 +71,9 @@ def convert_generic(infile: Path, outfile: Path) -> None:
 
         metadata: dict = {"axes": axes}
 
-        channel_names = scene.channel_names
-        if channel_names:
-            metadata["Channel"] = {"Name": list(channel_names)}
+        channel_names = [scene.get_channel_name(i) for i in range(scene.num_channels)]
+        if any(channel_names):
+            metadata["Channel"] = {"Name": channel_names}
 
         res_x, res_y = scene.resolution
         if res_x > 0 and res_y > 0:

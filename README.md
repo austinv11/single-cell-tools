@@ -33,3 +33,7 @@ compress_h5ad input_file.h5ad  # Inline compression
 ```bash
 attach_to_notebook my_notebook.ipynb  # Attach to a Jupyter notebook to view execution results inline
 ```
+
+```bash
+convert_ome_tiff input_file.svs output_file.ome.tiff  # Convert files to OME-TIFF format
+```
